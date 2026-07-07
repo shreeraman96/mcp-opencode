@@ -1,5 +1,6 @@
 # mcp-opencode
 
+[![npm version](https://img.shields.io/npm/v/mcp-opencode.svg)](https://www.npmjs.com/package/mcp-opencode)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org)
 
@@ -34,7 +35,30 @@ model, or anything else OpenCode can reach.
   one provider authenticated (`opencode auth login`). Run `opencode models` to
   see what's available to you.
 
-## Install
+## Register
+
+No install step needed — `npx` fetches and runs the published package.
+
+**Claude Code:**
+
+```bash
+claude mcp add -s user opencode \
+  -e OPENCODE_MCP_ROOTS="$HOME/Projects" \
+  -- npx -y mcp-opencode
+```
+
+**Codex:**
+
+```bash
+codex mcp add opencode \
+  --env OPENCODE_MCP_ROOTS="$HOME/Projects" \
+  -- npx -y mcp-opencode
+```
+
+Restart the client (or run `claude mcp list` / `codex mcp list`) to confirm it
+connects. The tools appear as `opencode_run`, `opencode_reply`, `opencode_models`.
+
+## Build from source (for development)
 
 ```bash
 git clone https://github.com/shreeraman96/mcp-opencode.git
@@ -45,26 +69,8 @@ npm test          # unit tests
 npm run smoke     # optional: live test against a real free OpenCode model
 ```
 
-## Register
-
-**Claude Code:**
-
-```bash
-claude mcp add -s user opencode \
-  -e OPENCODE_MCP_ROOTS="$HOME/Projects" \
-  -- node /absolute/path/to/mcp-opencode/dist/index.js
-```
-
-**Codex:**
-
-```bash
-codex mcp add opencode \
-  --env OPENCODE_MCP_ROOTS="$HOME/Projects" \
-  -- node /absolute/path/to/mcp-opencode/dist/index.js
-```
-
-Restart the client (or run `claude mcp list` / `codex mcp list`) to confirm it
-connects. The tools appear as `opencode_run`, `opencode_reply`, `opencode_models`.
+Then register with `node /absolute/path/to/mcp-opencode/dist/index.js` instead of
+the `npx` command above.
 
 ## Tools
 
