@@ -72,19 +72,35 @@ describe("policy: redaction", () => {
     expect(redact(input)).toBe("Authorization: [REDACTED]");
   });
 
+  it("redacts a base64 Bearer token fully (no + / = tail leak)", () => {
+    const out = redact("Authorization: Bearer abc+def/ghi=");
+    expect(out).not.toContain("def");
+    expect(out).not.toContain("ghi");
+  });
+
   it("redacts key=value style secrets (api_key, token, secret, password)", () => {
-    // Trailing closing quote is intentionally left outside the match (the
-    // regex's value class excludes quote characters), so redaction leaves a
-    // dangling quote behind -- the secret value itself is still gone.
-    expect(redact('api_key: "supersecretvalue"')).toBe('[REDACTED]"');
+    // Quoted values (including spaces) are redacted whole -- no dangling quote
+    // or trailing suffix left behind.
+    expect(redact('api_key: "supersecretvalue"')).toBe("[REDACTED]");
+    expect(redact('password: "hunter two three"')).toBe("[REDACTED]");
     expect(redact("token=abcdef123456")).toBe("[REDACTED]");
-    expect(redact("secret = 'xyz987'")).toBe("[REDACTED]'");
+    expect(redact("secret = 'xyz987'")).toBe("[REDACTED]");
     expect(redact("password:hunter2xyz")).toBe("[REDACTED]");
   });
 
   it("leaves ordinary text untouched", () => {
     const input = "This is a normal log line with no secrets in it.";
     expect(redact(input)).toBe(input);
+  });
+
+  it("redacts AWS keys, GitHub tokens, and PEM private-key blocks", () => {
+    expect(redact("key AKIAIOSFODNN7EXAMPLE here")).not.toContain("AKIAIOSFODNN7EXAMPLE");
+    expect(redact("ghp_0123456789abcdefghijABCDEFghij0123")).not.toContain("ghp_0123456789");
+    const pem =
+      "-----BEGIN OPENSSH PRIVATE KEY-----\nMIIBhogus+key/data==\n-----END OPENSSH PRIVATE KEY-----";
+    const out = redact(pem);
+    expect(out).not.toContain("hogus+key");
+    expect(out).toContain("[REDACTED]");
   });
 });
 

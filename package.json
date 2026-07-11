@@ -1,53 +1,19 @@
 {
-  "name": "mcp-opencode",
-  "version": "0.1.0",
-  "description": "MCP server to delegate coding implementations to the OpenCode CLI with an explicit provider + model per call. Works with Claude Code and Codex.",
-  "type": "module",
+  "name": "mcp-coding-agents-workspace",
+  "private": true,
+  "description": "Workspace for the independent mcp-opencode and mcp-grok MCP servers.",
   "license": "MIT",
-  "author": "shreeraman96",
-  "homepage": "https://github.com/shreeraman96/mcp-opencode#readme",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/shreeraman96/mcp-opencode.git"
-  },
-  "bugs": {
-    "url": "https://github.com/shreeraman96/mcp-opencode/issues"
-  },
-  "keywords": [
-    "mcp",
-    "model-context-protocol",
-    "opencode",
-    "claude-code",
-    "codex",
-    "ai-agent",
-    "code-generation",
-    "llm",
-    "delegation"
+  "workspaces": [
+    "packages/*"
   ],
-  "bin": {
-    "mcp-opencode": "dist/index.js"
-  },
-  "files": [
-    "dist",
-    "README.md",
-    "LICENSE"
-  ],
-  "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "test": "vitest run",
-    "smoke": "node scripts/smoke.mjs",
-    "prepublishOnly": "npm run build"
-  },
   "engines": {
     "node": ">=20"
   },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0 <2.0.0",
-    "zod": "^3.23.8"
-  },
-  "devDependencies": {
-    "typescript": "^5.6.2",
-    "vitest": "^2.1.4",
-    "@types/node": "^20.14.0"
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm test --workspaces --if-present",
+    "smoke": "npm run smoke --workspace mcp-opencode",
+    "pack:opencode": "npm pack --workspace mcp-opencode --dry-run",
+    "pack:grok": "npm pack --workspace mcp-grok --dry-run"
   }
 }

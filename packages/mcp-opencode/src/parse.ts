@@ -6,11 +6,15 @@
  * incremental state.
  */
 
+import { redact } from "./policy.js";
+
 const HEAD_CAP = 40_000;
 const TAIL_CAP = 10_000;
 const TRUNCATE_THRESHOLD = 50_000;
-const MAX_LINE_BYTES = 1_000_000;
+export const MAX_LINE_BYTES = 1_000_000;
 const STDERR_RING_CAP = 16 * 1024;
+const MAX_ERROR_MESSAGES = 8;
+const MAX_ERROR_CHARS = 4_000;
 
 export interface StepFinishInfo {
   reason?: string;
@@ -63,10 +67,16 @@ class TextAccumulator {
 
   toString(): string {
     if (this.total <= TRUNCATE_THRESHOLD) {
+      // head+tail are contiguous slices of the same stream, so a surrogate pair
+      // split across the boundary rejoins here; no trimming needed.
       return this.head + this.tail;
     }
-    const omitted = this.total - this.head.length - this.tail.length;
-    return `${this.head}\n…[truncated ${omitted} chars]…\n${this.tail}`;
+    // The truncation marker separates head from tail, so trim any half-pair left
+    // dangling at either cut to avoid emitting a lone surrogate.
+    const head = trimTrailingHighSurrogate(this.head);
+    const tail = trimLeadingLowSurrogate(this.tail);
+    const omitted = this.total - head.length - tail.length;
+    return `${head}\n…[truncated ${omitted} chars]…\n${tail}`;
   }
 }
 
@@ -84,6 +94,94 @@ export class RingBuffer {
 
   toString(): string {
     return this.buf;
+  }
+}
+
+/** Trim a lone trailing high surrogate so a slice never emits half a pair. */
+function trimTrailingHighSurrogate(text: string): string {
+  if (text.length === 0) return text;
+  const last = text.charCodeAt(text.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? text.slice(0, -1) : text;
+}
+
+/** Trim a lone leading low surrogate (the other half dropped elsewhere). */
+function trimLeadingLowSurrogate(text: string): string {
+  if (text.length === 0) return text;
+  const first = text.charCodeAt(0);
+  return first >= 0xdc00 && first <= 0xdfff ? text.slice(1) : text;
+}
+
+/**
+ * Assembles complete lines from arbitrary decoded chunks while enforcing a hard
+ * byte ceiling *during* accumulation -- unlike node:readline, which buffers a
+ * newline-less line to unbounded heap before any consumer sees it. Once the
+ * in-progress line crosses `maxLineBytes` with no newline, its bytes are dropped
+ * and everything up to the next newline is discarded; the line is reported as
+ * oversized. Peak memory is therefore ~maxLineBytes + one chunk.
+ */
+export class LineSplitter {
+  private partial = "";
+  private partialBytes = 0;
+  private dropping = false;
+
+  constructor(
+    private readonly onLine: (line: string) => void,
+    private readonly onOversized: () => void,
+    private readonly maxLineBytes: number = MAX_LINE_BYTES,
+  ) {}
+
+  push(chunk: string): void {
+    if (chunk.length === 0) return;
+    let start = 0;
+    for (;;) {
+      const nl = chunk.indexOf("\n", start);
+      if (nl === -1) {
+        this.buffer(chunk.slice(start));
+        return;
+      }
+      let segment = chunk.slice(start, nl);
+      if (segment.endsWith("\r")) segment = segment.slice(0, -1);
+      if (this.dropping) {
+        this.onOversized();
+        this.reset();
+      } else {
+        this.onLine(this.partial + segment);
+        this.reset();
+      }
+      start = nl + 1;
+    }
+  }
+
+  /** Emit any trailing bytes with no final newline (e.g. child killed mid-line). */
+  flush(): void {
+    if (this.dropping) {
+      this.onOversized();
+      this.reset();
+      return;
+    }
+    if (this.partial.length > 0) {
+      this.onLine(this.partial);
+      this.reset();
+    }
+  }
+
+  private buffer(rest: string): void {
+    if (this.dropping || rest.length === 0) return;
+    const bytes = Buffer.byteLength(rest, "utf8");
+    if (this.partialBytes + bytes > this.maxLineBytes) {
+      this.dropping = true; // over cap with no newline yet; discard until next \n
+      this.partial = "";
+      this.partialBytes = 0;
+      return;
+    }
+    this.partial += rest;
+    this.partialBytes += bytes;
+  }
+
+  private reset(): void {
+    this.partial = "";
+    this.partialBytes = 0;
+    this.dropping = false;
   }
 }
 
@@ -106,10 +204,16 @@ export class JsonlParser {
 
   constructor(private readonly opts: JsonlParserOptions = {}) {}
 
+  /** Record a line the upstream LineSplitter dropped for exceeding the cap. */
+  noteOversizedLine(): void {
+    this.oversizedLines++;
+  }
+
   /** Feed a single raw line (without trailing newline) from stdout. */
   feedLine(rawLine: string): void {
     if (rawLine.length === 0) return;
-    // Approximate byte length via UTF-16 code unit length; good enough for a cap.
+    // Defense in depth: LineSplitter already caps line length, but a direct
+    // feedLine caller (tests) could exceed it.
     if (Buffer.byteLength(rawLine, "utf8") > MAX_LINE_BYTES) {
       this.oversizedLines++;
       return;
@@ -123,7 +227,14 @@ export class JsonlParser {
       return;
     }
 
-    if (event && typeof event === "object") {
+    // Arrays are typeof "object" but are not valid events; reject them (and
+    // null) as malformed rather than silently ignoring protocol drift.
+    if (event === null || typeof event !== "object" || Array.isArray(event)) {
+      this.malformedLines++;
+      return;
+    }
+
+    {
       if (this.sessionID === undefined && typeof event.sessionID === "string") {
         this.sessionID = event.sessionID;
       }
@@ -157,11 +268,11 @@ export class JsonlParser {
           event.message ||
           event.error ||
           JSON.stringify(event);
-        this.errorMessages.push(String(message));
+        if (this.errorMessages.length < MAX_ERROR_MESSAGES) {
+          this.errorMessages.push(redact(String(message).slice(0, MAX_ERROR_CHARS)));
+        }
       }
       // Other event types (step_start, tool_use/tool, etc.) are intentionally ignored.
-    } else {
-      this.malformedLines++;
     }
   }
 

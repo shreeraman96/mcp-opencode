@@ -5,7 +5,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
-import { validateCwd, redact, classifyError, isEmptyResult, MODEL_RE, SESSION_RE } from "./policy.js";
+import { validateCwd, redact, classifyError, isEmptyResult, boundText, MODEL_RE, SESSION_RE } from "./policy.js";
 import { runOpencode, type Agent } from "./run.js";
 import { CwdQueue } from "./queue.js";
 import type { ParsedResult } from "./parse.js";
@@ -22,24 +22,30 @@ function toolSuccess(text: string) {
   return { content: [{ type: "text" as const, text }], isError: false };
 }
 
+const GIT_EXEC_OPTS = { timeout: 10_000, maxBuffer: 512 * 1024 } as const;
+
 async function gitChangedFiles(cwd: string): Promise<string | undefined> {
   try {
-    const check = await execFileP("git", ["-C", cwd, "rev-parse", "--is-inside-work-tree"]);
+    const check = await execFileP(
+      "git",
+      ["-C", cwd, "rev-parse", "--is-inside-work-tree"],
+      GIT_EXEC_OPTS,
+    );
     if (check.stdout.trim() !== "true") return undefined;
   } catch {
     return undefined; // not a git repo, or git unavailable: skip silently
   }
   try {
     const [diffStat, status] = await Promise.all([
-      execFileP("git", ["-C", cwd, "diff", "--stat"]),
-      execFileP("git", ["-C", cwd, "status", "--porcelain"]),
+      execFileP("git", ["-C", cwd, "diff", "--stat"], GIT_EXEC_OPTS),
+      execFileP("git", ["-C", cwd, "status", "--porcelain"], GIT_EXEC_OPTS),
     ]);
     const untracked = status.stdout
       .split("\n")
       .filter((l) => l.startsWith("??"))
       .join("\n");
     const chunks = [diffStat.stdout.trim(), untracked.trim()].filter((s) => s.length > 0);
-    return chunks.length > 0 ? chunks.join("\n") : "(no changes detected)";
+    return chunks.length > 0 ? boundText(redact(chunks.join("\n")), 12_000) : "(no changes detected)";
   } catch {
     return undefined;
   }
@@ -104,6 +110,9 @@ async function executeRun(
     });
 
     const { parsed, stderrTail, reason, exitCode, elapsedSec } = outcome;
+    // Assistant text can echo secrets the agent read (.env, keys); redact before
+    // it ever reaches the client, on every path that returns it.
+    const safeText = redact(parsed.text);
     const { tokens, cost } = formatTokensAndCost(parsed);
     const changedFiles = await gitChangedFiles(resolvedCwd);
 
@@ -141,7 +150,7 @@ async function executeRun(
         [
           `status: cost cap exceeded (limit $${args.maxCostUsd})`,
           ...header,
-          `partial output:\n${parsed.text}`,
+          `partial output:\n${safeText}`,
           `stderr tail:\n${stderrTail}`,
         ].join("\n"),
       );
@@ -156,8 +165,22 @@ async function executeRun(
       );
     }
 
+    // The cap can be crossed by a step_finish parsed after the child already
+    // exited, so settle("cost-cap") loses the race to settle("exit"). The flag
+    // is authoritative regardless of which reason won.
+    if (parsed.costCapExceeded) {
+      return toolError(
+        [
+          `status: cost cap exceeded (limit $${args.maxCostUsd})`,
+          ...header,
+          `partial output:\n${safeText}`,
+          `stderr tail:\n${stderrTail}`,
+        ].join("\n"),
+      );
+    }
+
     // exitCode === 0
-    const hasText = parsed.text.trim().length > 0;
+    const hasText = safeText.trim().length > 0;
     const hasError = parsed.errorMessages.length > 0;
     // A build run can legitimately edit files and emit no final text event
     // (the known missing-step_finish upstream bug). Treat on-disk changes as a
@@ -179,7 +202,7 @@ async function executeRun(
     if (hasError) {
       body.push(`errors observed during run:\n${redact(parsed.errorMessages.join("\n"))}`);
     }
-    body.push("", parsed.text);
+    body.push("", safeText);
     return toolSuccess(body.join("\n"));
   });
 }
@@ -202,7 +225,12 @@ server.registerTool(
       agent: z.enum(["build", "plan"]).default("build"),
       variant: z.string().optional().describe("Model variant, e.g. reasoning effort (high/max/minimal)."),
       timeoutSec: z.number().int().min(30).max(3600).default(900),
-      maxCostUsd: z.number().optional().describe("Kill the run and return partial output if exceeded."),
+      maxCostUsd: z
+        .number()
+        .finite()
+        .positive()
+        .optional()
+        .describe("Kill the run and return partial output if exceeded."),
     },
   },
   async (input, extra) => {
@@ -273,7 +301,7 @@ server.registerTool(
       if (out.length === 0) {
         return toolError(`opencode models returned no output.\nstderr:\n${redact(stderr.slice(-2000))}`);
       }
-      return toolSuccess(out);
+      return toolSuccess(boundText(redact(out), 12_000));
     } catch (err: any) {
       const stderr = redact(String(err?.stderr ?? err?.message ?? err));
       return toolError(`Failed to list models: ${stderr}`);
@@ -286,7 +314,12 @@ async function main() {
   await server.connect(transport);
 }
 
-main().catch((err) => {
-  console.error("Fatal error starting mcp-opencode:", err);
-  process.exit(1);
-});
+if (process.argv.includes("--help") || process.argv.includes("-h")) {
+  console.log("mcp-opencode: MCP stdio server for the OpenCode CLI");
+  console.log("Usage: mcp-opencode");
+} else {
+  main().catch((err) => {
+    console.error("Fatal error starting mcp-opencode:", err);
+    process.exit(1);
+  });
+}

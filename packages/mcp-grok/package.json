@@ -1,0 +1,52 @@
+{
+  "name": "mcp-grok",
+  "version": "0.1.0",
+  "description": "MCP server that delegates coding tasks to the installed Grok Build CLI.",
+  "type": "module",
+  "license": "MIT",
+  "author": "shreeraman96",
+  "homepage": "https://github.com/shreeraman96/mcp-coding-agents#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shreeraman96/mcp-coding-agents.git",
+    "directory": "packages/mcp-grok"
+  },
+  "bugs": {
+    "url": "https://github.com/shreeraman96/mcp-coding-agents/issues"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "grok",
+    "grok-build",
+    "claude-code",
+    "codex",
+    "ai-agent",
+    "delegation"
+  ],
+  "bin": {
+    "mcp-grok": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "prepublishOnly": "npm run build"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0 <2.0.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.2",
+    "vitest": "^2.1.4",
+    "@types/node": "^20.14.0"
+  }
+}

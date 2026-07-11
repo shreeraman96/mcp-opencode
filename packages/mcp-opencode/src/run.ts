@@ -1,10 +1,12 @@
 import { spawn } from "node:child_process";
-import readline from "node:readline";
-import { JsonlParser, RingBuffer, type ParsedResult } from "./parse.js";
+import { StringDecoder } from "node:string_decoder";
+import { JsonlParser, LineSplitter, RingBuffer, type ParsedResult } from "./parse.js";
 import { extraPermissionArgs, redact } from "./policy.js";
 
 export type Agent = "build" | "plan";
 export type SettleReason = "exit" | "abort" | "timeout" | "cost-cap";
+
+const FORCE_FINALIZE_MS = 8_000;
 
 export interface RunOpencodeOptions {
   model: string;
@@ -24,6 +26,9 @@ export interface RunOpencodeOptions {
   /** Test seam: override the spawned command/args instead of invoking the
    * real `opencode` binary. Not used in production. */
   _spawnOverride?: { command: string; args: string[] };
+  /** Test-only timer seams; do not change public timeout validation. */
+  _timeoutMsOverride?: number;
+  _forceFinalizeMsOverride?: number;
 }
 
 export interface RunOpencodeOutcome {
@@ -61,23 +66,31 @@ export function buildArgs(opts: RunOpencodeOptions): string[] {
   return args;
 }
 
-function killProcessGroup(pid: number): Promise<void> {
-  return new Promise((resolveKill) => {
+/**
+ * Signal the detached process group and, as a fallback, the direct child pid.
+ * The group signal (`-pid`) reaps children that stayed in the group; the direct
+ * `pid` signal covers the case where the group signal failed (EPERM) or the
+ * leader re-sessioned itself. This is still best-effort: a grandchild that calls
+ * setsid into its own session is unreachable by pid alone -- see the limitation
+ * noted in the README security section.
+ */
+function signalTree(pid: number, signal: NodeJS.Signals): void {
+  for (const target of [-pid, pid]) {
     try {
-      process.kill(-pid, "SIGTERM");
+      process.kill(target, signal);
     } catch (err: any) {
       if (err?.code !== "ESRCH") {
-        // best-effort; nothing else to do
+        // Best effort; finalization still has a force timer.
       }
     }
+  }
+}
+
+function killProcessGroup(pid: number): Promise<void> {
+  return new Promise((resolveKill) => {
+    signalTree(pid, "SIGTERM");
     const killTimer = setTimeout(() => {
-      try {
-        process.kill(-pid, "SIGKILL");
-      } catch (err: any) {
-        if (err?.code !== "ESRCH") {
-          // best-effort
-        }
-      }
+      signalTree(pid, "SIGKILL");
       resolveKill();
     }, 5000);
     killTimer.unref?.();
@@ -95,6 +108,20 @@ function killProcessGroup(pid: number): Promise<void> {
 export function runOpencode(opts: RunOpencodeOptions): Promise<RunOpencodeOutcome> {
   return new Promise((resolve) => {
     const startTime = Date.now();
+
+    // Honor an already-aborted request without spawning the CLI at all -- a
+    // spawn-then-kill would still do brief real work (provider calls, cost).
+    if (opts.signal?.aborted) {
+      resolve({
+        reason: "abort",
+        exitCode: null,
+        parsed: new JsonlParser().getResult(),
+        stderrTail: "",
+        elapsedSec: (Date.now() - startTime) / 1000,
+      });
+      return;
+    }
+
     const command = opts._spawnOverride?.command ?? "opencode";
     const args = opts._spawnOverride?.args ?? buildArgs(opts);
     const child = spawn(command, args, {
@@ -114,11 +141,38 @@ export function runOpencode(opts: RunOpencodeOptions): Promise<RunOpencodeOutcom
     let finalized = false;
     let timeoutTimer: NodeJS.Timeout | undefined;
     let forceFinalizeTimer: NodeJS.Timeout | undefined;
+    let hardFinalizeTimer: NodeJS.Timeout | undefined;
+    let abortListener: (() => void) | undefined;
 
     const parser = new JsonlParser({
       maxCostUsd: opts.maxCostUsd,
       onCostCapExceeded: () => settle("cost-cap"),
     });
+
+    // Hoisted so the kill-path timers can flush already-received bytes before
+    // resolving, instead of dropping the last partial line/multibyte sequence.
+    // StringDecoder keeps multibyte chars intact across chunk boundaries;
+    // LineSplitter caps in-progress line length so a newline-less flood cannot
+    // grow the heap unbounded (unlike readline).
+    const stdoutDecoder = new StringDecoder("utf8");
+    const stdoutSplitter = new LineSplitter(
+      (line) => parser.feedLine(line),
+      () => parser.noteOversizedLine(),
+    );
+    const stderrDecoder = new StringDecoder("utf8");
+    let stdoutDrained = false;
+    let stderrDrained = false;
+    function drainStdout() {
+      if (stdoutDrained) return;
+      stdoutDrained = true;
+      stdoutSplitter.push(stdoutDecoder.end());
+      stdoutSplitter.flush();
+    }
+    function drainStderr() {
+      if (stderrDrained) return;
+      stderrDrained = true;
+      stderrRing.push(stderrDecoder.end());
+    }
 
     function clearHeartbeat() {
       if (heartbeatTimer) {
@@ -141,6 +195,27 @@ export function runOpencode(opts: RunOpencodeOptions): Promise<RunOpencodeOutcom
       clearHeartbeat();
       if (newReason !== "exit") {
         triggerKill();
+        hardFinalizeTimer = setTimeout(() => {
+          // The tree ignored the earlier group signals (or re-sessioned). Force
+          // SIGKILL the direct child, stop consuming its pipes, then finalize --
+          // the outcome is reported under the settle reason (timeout/abort/cost-cap),
+          // not as a clean finish, so a still-dying tree is never labelled "success".
+          try {
+            child.kill("SIGKILL");
+          } catch {
+            // best effort
+          }
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          // Flush what we already received before tearing down the pipes.
+          drainStdout();
+          drainStderr();
+          childExited = true;
+          stdoutClosed = true;
+          stderrClosed = true;
+          maybeFinalize();
+        }, opts._forceFinalizeMsOverride ?? FORCE_FINALIZE_MS);
+        hardFinalizeTimer.unref?.();
       }
       maybeFinalize();
     }
@@ -153,6 +228,8 @@ export function runOpencode(opts: RunOpencodeOptions): Promise<RunOpencodeOutcom
       clearHeartbeat();
       if (timeoutTimer) clearTimeout(timeoutTimer);
       if (forceFinalizeTimer) clearTimeout(forceFinalizeTimer);
+      if (hardFinalizeTimer) clearTimeout(hardFinalizeTimer);
+      if (abortListener) opts.signal?.removeEventListener("abort", abortListener);
       const elapsedSec = (Date.now() - startTime) / 1000;
       resolve({
         reason,
@@ -172,21 +249,23 @@ export function runOpencode(opts: RunOpencodeOptions): Promise<RunOpencodeOutcom
       heartbeatTimer.unref?.();
     }
 
-    timeoutTimer = setTimeout(() => settle("timeout"), opts.timeoutSec * 1000);
+    timeoutTimer = setTimeout(
+      () => settle("timeout"),
+      opts._timeoutMsOverride ?? opts.timeoutSec * 1000,
+    );
     timeoutTimer.unref?.();
 
     if (opts.signal) {
-      if (opts.signal.aborted) {
-        settle("abort");
-      } else {
-        opts.signal.addEventListener("abort", () => settle("abort"), { once: true });
-      }
+      abortListener = () => settle("abort");
+      opts.signal.addEventListener("abort", abortListener, { once: true });
     }
 
     if (child.stdout) {
-      const rl = readline.createInterface({ input: child.stdout });
-      rl.on("line", (line) => parser.feedLine(line));
-      rl.on("close", () => {
+      child.stdout.on("data", (chunk: Buffer | string) => {
+        stdoutSplitter.push(typeof chunk === "string" ? chunk : stdoutDecoder.write(chunk));
+      });
+      child.stdout.on("close", () => {
+        drainStdout();
         stdoutClosed = true;
         maybeFinalize();
       });
@@ -195,8 +274,13 @@ export function runOpencode(opts: RunOpencodeOptions): Promise<RunOpencodeOutcom
     }
 
     if (child.stderr) {
-      child.stderr.on("data", (chunk: Buffer) => stderrRing.push(chunk.toString("utf8")));
+      // Decode across chunk boundaries so a secret split mid-token still matches
+      // redaction (a raw per-chunk toString could leave mojibake seams).
+      child.stderr.on("data", (chunk: Buffer | string) =>
+        stderrRing.push(typeof chunk === "string" ? chunk : stderrDecoder.write(chunk)),
+      );
       child.stderr.on("close", () => {
+        drainStderr();
         stderrClosed = true;
         maybeFinalize();
       });
@@ -209,13 +293,19 @@ export function runOpencode(opts: RunOpencodeOptions): Promise<RunOpencodeOutcom
       childExited = true;
       settle("exit");
       // Safety net: if stdio streams somehow never emit 'close' (edge case),
-      // force finalize shortly after exit rather than hang forever.
-      forceFinalizeTimer = setTimeout(() => {
-        stdoutClosed = true;
-        stderrClosed = true;
-        maybeFinalize();
-      }, 3000);
-      forceFinalizeTimer.unref?.();
+      // force finalize shortly after exit rather than hang forever. Only armed
+      // when finalize() has not already run, so a clean exit with streams
+      // already closed leaves no dangling timer.
+      if (!finalized) {
+        forceFinalizeTimer = setTimeout(() => {
+          drainStdout();
+          drainStderr();
+          stdoutClosed = true;
+          stderrClosed = true;
+          maybeFinalize();
+        }, 3000);
+        forceFinalizeTimer.unref?.();
+      }
       maybeFinalize();
     });
 
@@ -225,13 +315,18 @@ export function runOpencode(opts: RunOpencodeOptions): Promise<RunOpencodeOutcom
       childExited = true;
       settle("exit");
       // On spawn failure (e.g. ENOENT) the stdio streams may never emit 'close';
-      // force finalize shortly after rather than hang forever.
-      forceFinalizeTimer = setTimeout(() => {
-        stdoutClosed = true;
-        stderrClosed = true;
-        maybeFinalize();
-      }, 3000);
-      forceFinalizeTimer.unref?.();
+      // force finalize shortly after rather than hang forever. Only armed when
+      // finalize() has not already run.
+      if (!finalized) {
+        forceFinalizeTimer = setTimeout(() => {
+          drainStdout();
+          drainStderr();
+          stdoutClosed = true;
+          stderrClosed = true;
+          maybeFinalize();
+        }, 3000);
+        forceFinalizeTimer.unref?.();
+      }
       maybeFinalize();
     });
   });

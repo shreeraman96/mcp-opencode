@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { JsonlParser } from "../src/parse.js";
+import { JsonlParser, LineSplitter, MAX_LINE_BYTES } from "../src/parse.js";
 
 function feedAll(parser: JsonlParser, lines: string[]) {
   for (const l of lines) parser.feedLine(l);
@@ -86,6 +86,17 @@ describe("JsonlParser", () => {
     expect(result.text).toBe("ok part2");
   });
 
+  it("counts JSON arrays and non-objects as malformed, not silently ignored", () => {
+    const parser = new JsonlParser();
+    parser.feedLine("[]");
+    parser.feedLine("42");
+    parser.feedLine("null");
+    parser.feedLine(JSON.stringify({ type: "text", part: { text: "ok" } }));
+    const result = parser.getResult();
+    expect(result.malformedLines).toBe(3);
+    expect(result.text).toBe("ok");
+  });
+
   it("truncates text keeping head 40k + tail 10k when total exceeds 50k", () => {
     const parser = new JsonlParser();
     // Build > 50k chars across multiple text events.
@@ -152,5 +163,62 @@ describe("JsonlParser", () => {
     );
     expect(fired).toBe(1); // does not fire again
     expect(parser.getResult().costCapExceeded).toBe(true);
+  });
+});
+
+describe("LineSplitter (bounded line assembly)", () => {
+  function collect() {
+    const lines: string[] = [];
+    let oversized = 0;
+    const splitter = new LineSplitter(
+      (line) => lines.push(line),
+      () => oversized++,
+    );
+    return { lines, splitter, oversizedCount: () => oversized };
+  }
+
+  it("reassembles lines split across arbitrary chunk boundaries and strips CR", () => {
+    const { lines, splitter } = collect();
+    splitter.push("he");
+    splitter.push("llo\r\nwor");
+    splitter.push("ld\n");
+    expect(lines).toEqual(["hello", "world"]);
+  });
+
+  it("emits a trailing newline-less line only on flush", () => {
+    const { lines, splitter } = collect();
+    splitter.push("no-newline-yet");
+    expect(lines).toEqual([]);
+    splitter.flush();
+    expect(lines).toEqual(["no-newline-yet"]);
+  });
+
+  it("drops a newline-less flood without unbounded buffering and reports it oversized", () => {
+    const { lines, splitter, oversizedCount } = collect();
+    // Feed well past the cap in many chunks with no newline: memory must stay
+    // bounded (the splitter enters dropping mode and holds no partial).
+    const chunk = "x".repeat(100_000);
+    for (let fed = 0; fed <= MAX_LINE_BYTES + 500_000; fed += chunk.length) {
+      splitter.push(chunk);
+    }
+    // A newline finally arrives, closing the oversized line; a real line follows.
+    splitter.push("\n" + JSON.stringify({ type: "text", part: { text: "ok" } }) + "\n");
+    expect(oversizedCount()).toBe(1);
+    expect(lines).toEqual([JSON.stringify({ type: "text", part: { text: "ok" } })]);
+  });
+
+  it("feeds bounded lines straight into the parser", () => {
+    const parser = new JsonlParser();
+    const splitter = new LineSplitter(
+      (line) => parser.feedLine(line),
+      () => parser.noteOversizedLine(),
+    );
+    splitter.push(JSON.stringify({ type: "text", part: { text: "hi" } }) + "\n");
+    splitter.push(`{"type":"text","part":{"text":"${"y".repeat(MAX_LINE_BYTES + 10)}`);
+    splitter.push('"}}\n');
+    splitter.flush();
+    const result = parser.getResult();
+    expect(result.text).toBe("hi");
+    expect(result.oversizedLines).toBe(1);
   });
 });

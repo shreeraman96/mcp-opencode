@@ -114,6 +114,24 @@ describe("runOpencode lifecycle (fake child process tree)", () => {
     }
   });
 
+  it("flushes a buffered newline-less line when the hard-finalize timer fires before stdout closes", async () => {
+    // Child emits a JSONL text event WITHOUT a trailing newline, then ignores
+    // SIGTERM and stays alive so stdout never closes on its own. The hard
+    // finalize timer must drain the buffered line before resolving.
+    const script =
+      `process.stdout.write('{"type":"text","part":{"text":"TAILLINE"}}');` +
+      `process.on('SIGTERM',()=>{});setInterval(()=>{},1000);`;
+    const outcome = await runOpencode(
+      baseOpts({
+        _timeoutMsOverride: 300,
+        _forceFinalizeMsOverride: 300,
+        _spawnOverride: { command: process.execPath, args: ["-e", script] },
+      }),
+    );
+    expect(outcome.reason).toBe("timeout");
+    expect(outcome.parsed.text).toContain("TAILLINE");
+  });
+
   it("reports a normal exit with exit code 0 for a quick, well-behaved fake child", async () => {
     const outcome = await runOpencode(
       baseOpts({

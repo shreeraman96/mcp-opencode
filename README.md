@@ -1,157 +1,60 @@
-# mcp-opencode
+# MCP CLI workspace
 
-[![npm version](https://img.shields.io/npm/v/mcp-opencode.svg)](https://www.npmjs.com/package/mcp-opencode)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
-[![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org)
+This private npm workspace contains two independent MCP stdio servers. They
+are separate packages, separate executable processes, and separate published
+identities:
 
-An [MCP](https://modelcontextprotocol.io) server that lets an AI coding agent
-(Claude Code, Codex, or any MCP client) **delegate implementation work to the
-[OpenCode CLI](https://opencode.ai)** — choosing an explicit **provider + model
-on every call**.
+- [`mcp-opencode`](./packages/mcp-opencode) preserves the existing
+  `mcp-opencode` package and delegates to the OpenCode CLI.
+- [`mcp-grok`](./packages/mcp-grok) wraps the installed Grok Build CLI and
+  publishes as `mcp-grok`.
 
-Use it to orchestrate with one model while offloading the actual code-writing to
-another: plan in Claude, implement with GLM 5.2, Kimi, DeepSeek, a local Ollama
-model, or anything else OpenCode can reach.
+Neither server is a combined router, and there is deliberately no shared core
+package yet. Each package owns its CLI adapter, policy, parser, queue, tests,
+and runtime dependencies so either package can be installed and published on
+its own.
 
-> **Provider-agnostic.** This server contains **no** provider-specific logic. It
-> passes your `provider/model` string straight to `opencode run -m`, so it works
-> with every provider OpenCode supports (75+ via [models.dev](https://models.dev),
-> plus local models). Whatever you've authenticated in OpenCode, you can use here.
-
-## Why
-
-- **Model per task.** A cheap model for mechanical edits, a strong one for hard
-  changes — decided per call, not baked into config.
-- **Real cost/token reporting** returned with every run.
-- **Multi-turn.** Continue a session to iterate on the same working tree.
-- **Safe by construction.** `cwd` is confined to an allowlist; the child process
-  tree is killed cleanly on timeout/abort/cost-cap; secrets are redacted from
-  anything echoed back.
-
-## Prerequisites
-
-- Node.js ≥ 20
-- The [OpenCode CLI](https://opencode.ai) installed and on `PATH`, with at least
-  one provider authenticated (`opencode auth login`). Run `opencode models` to
-  see what's available to you.
-
-## Register
-
-No install step needed — `npx` fetches and runs the published package.
-
-**Claude Code:**
+## Quick start
 
 ```bash
-claude mcp add -s user opencode \
-  -e OPENCODE_MCP_ROOTS="$HOME/Projects" \
-  -- npx -y mcp-opencode
-```
-
-**Codex:**
-
-```bash
-codex mcp add opencode \
-  --env OPENCODE_MCP_ROOTS="$HOME/Projects" \
-  -- npx -y mcp-opencode
-```
-
-Restart the client (or run `claude mcp list` / `codex mcp list`) to confirm it
-connects. The tools appear as `opencode_run`, `opencode_reply`, `opencode_models`.
-
-## Build from source (for development)
-
-```bash
-git clone https://github.com/shreeraman96/mcp-opencode.git
-cd mcp-opencode
 npm install
 npm run build
-npm test          # unit tests
-npm run smoke     # optional: live test against a real free OpenCode model
+npm test
 ```
 
-Then register with `node /absolute/path/to/mcp-opencode/dist/index.js` instead of
-the `npx` command above.
+Register either published server directly with an MCP client:
 
-## Tools
+```bash
+# OpenCode-backed server
+npx -y mcp-opencode
 
-### `opencode_run` — start a new session
+# Grok Build CLI-backed server
+npx -y mcp-grok
+```
 
-| field | type | notes |
-|---|---|---|
-| `prompt` | string | required — the task |
-| `model` | string | required — `provider/model`, e.g. `fireworks-ai/accounts/fireworks/models/glm-5p2` |
-| `cwd` | string | required — must resolve inside an allowed root (see below) |
-| `agent` | `'build' \| 'plan'` | default `'build'` (`plan` is read-only) |
-| `variant` | string | optional model variant / reasoning effort (`high`, `max`, `minimal`) |
-| `timeoutSec` | int 30–3600 | default 900 |
-| `maxCostUsd` | number | optional — kill the run and return partial output if exceeded |
+For Claude Code, add the desired server with `claude mcp add`; for Codex, use
+`codex mcp add`. Package-specific READMEs contain complete commands, tool
+schemas, environment variables, prerequisites, and security limitations:
 
-Returns status, `sessionID`, model, elapsed time, tokens/cost, a `git`-derived
-changed-files summary (when `cwd` is a repo), and the assistant output.
+- [mcp-opencode setup and tools](./packages/mcp-opencode/README.md)
+- [mcp-grok setup and tools](./packages/mcp-grok/README.md)
 
-### `opencode_reply` — continue a session
+## Workspace development
 
-Takes a `sessionID` (`ses_…`) from a prior run plus a new `prompt`, `model`,
-`cwd`, and `agent`. **`model` is required on every call** — there is no silent
-inheritance from the original run, by design.
+Run one package in isolation when iterating:
 
-### `opencode_models`
+```bash
+npm run build --workspace mcp-opencode
+npm test --workspace mcp-opencode
+npm run build --workspace mcp-grok
+npm test --workspace mcp-grok
+```
 
-No input. Runs `opencode models` and returns the available list.
-
-## Example (Claude Code)
-
-> Delegate to OpenCode: call `opencode_run` with model
-> `fireworks-ai/accounts/fireworks/models/glm-5p2`, cwd `~/Projects/myapp`,
-> agent `build`, and prompt "add input validation to routes/user.ts".
-
-Swap the model string for `anthropic/claude-sonnet-4-5`, `openai/gpt-oss-120b`,
-`opencode/big-pickle` (free), or any local model — nothing else changes.
-
-## Configuration
-
-| env var | default | purpose |
-|---|---|---|
-| `OPENCODE_MCP_ROOTS` | `$HOME/Projects` | colon-separated allowlist of directories `cwd` may resolve inside |
-| `OPENCODE_MCP_ALLOW_AUTO` | unset | set to `1` to add OpenCode's `--auto` flag for `agent=build` runs (see below) |
-
-### cwd allowlist
-
-`cwd` is resolved with `fs.realpath` (symlinks followed) and must land inside one
-of the `OPENCODE_MCP_ROOTS` directories. Requests outside the allowlist are
-rejected before `opencode` is ever spawned.
-
-### Permission model
-
-OpenCode's `build` agent already runs `edit`/`bash`/`webfetch` non-interactively;
-the `plan` agent is read-only. This server relies on those built-in agent
-defaults and does **not** inject a custom permission config.
-
-> **Note:** passing a custom `permission` block via `OPENCODE_CONFIG` was found to
-> hang `opencode run` in a non-TTY environment (an unanswerable `ask` prompt), so
-> that path is deliberately avoided. See [`src/policy.ts`](./src/policy.ts).
-
-`--auto` (OpenCode's "auto-approve anything not explicitly denied", which the CLI
-itself flags as dangerous) is **off by default** and only added when you set
-`OPENCODE_MCP_ALLOW_AUTO=1` *and* the call uses `agent: 'build'`.
-
-## How it works
-
-- **`src/run.ts`** spawns `opencode` detached in its own process group, so the
-  whole subprocess tree is killed as a unit (SIGTERM → 5s grace → SIGKILL) on
-  timeout, client abort, or a `maxCostUsd` breach. Process exit is treated as the
-  authoritative completion signal.
-- **`src/parse.ts`** streams the `--format json` output line-by-line without ever
-  buffering the raw stream; assistant text is capped to head(40k)+tail(10k) chars
-  past 50k total.
-- **`src/queue.ts`** serializes runs that share the same resolved `cwd`; different
-  working trees run concurrently.
-- **`src/policy.ts`** holds the cwd allowlist, model/session validation, secret
-  redaction, and error classification.
-
-For long runs, the server emits MCP progress notifications every 15s (when the
-client supplies a progress token), which resets the client's idle timeout.
+The root package is private and has no `bin`, `files`, or publishable package
+behavior. Do not commit, publish, or rename the repository as part of local
+development.
 
 ## License
 
-[MIT](./LICENSE)
+The workspace and both packages are MIT licensed. Each publishable package
+contains its own copy of [`LICENSE`](./LICENSE).

@@ -1,4 +1,4 @@
-import { realpath } from "node:fs/promises";
+import { realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
@@ -37,7 +37,15 @@ export interface CwdValidationResult {
 /**
  * Validate that `cwd` is inside one of the allowed roots. Both the roots and
  * the candidate cwd are resolved with fs.realpath so that symlink escapes are
- * caught (e.g. a symlink inside an allowed root pointing outside of it).
+ * caught (e.g. a symlink inside an allowed root pointing outside of it). A
+ * cwd must also be a directory because it will be passed as the child process
+ * cwd.
+ *
+ * Residual TOCTOU: the realpath'd string is handed to spawn, so a path component
+ * swapped to an out-of-root symlink between this check and spawn could escape.
+ * That requires write access to a component of an allowed root, i.e. a same-user
+ * local actor -- the same trust boundary that could invoke this MCP server
+ * directly -- so it is an accepted limitation rather than a closed hole.
  */
 export async function validateCwd(cwd: string): Promise<CwdValidationResult> {
   const roots = getConfiguredRoots();
@@ -45,6 +53,9 @@ export async function validateCwd(cwd: string): Promise<CwdValidationResult> {
   let resolvedCwd: string;
   try {
     resolvedCwd = await realpath(cwd);
+    if (!(await stat(resolvedCwd)).isDirectory()) {
+      return { ok: false, error: `cwd is not a directory: ${cwd}` };
+    }
   } catch (err) {
     return {
       ok: false,
@@ -84,24 +95,62 @@ export async function validateCwd(cwd: string): Promise<CwdValidationResult> {
   return { ok: true, resolved: resolvedCwd };
 }
 
+const ANSI_RE =
+  /[\u001B\u009B][[\]()#;?]*(?:(?:(?:[a-zA-Z\d]*(?:;[-a-zA-Z\d/#&.:=?%@~_]+)*)?\u0007)|(?:(?:\d{1,4}(?:;\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]))/g;
+
+export function stripAnsi(text: string): string {
+  return text.replace(ANSI_RE, "");
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /**
  * Redaction
  * ----------------
  * Strip obvious secrets out of any text we might echo back (stderr tails,
- * error messages, etc).
+ * error messages, etc). Provider-agnostic: this server passes an arbitrary
+ * provider/model string through to opencode, so the patterns below cover
+ * generic credential shapes (PEM keys, AWS/GitHub tokens, bearer/auth headers,
+ * key=value assignments) rather than any single provider's key format.
  */
 const REDACTION_PATTERNS: RegExp[] = [
+  // PEM private-key blocks (RSA/EC/OPENSSH/etc.) -- redact the whole block.
+  /-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z0-9 ]+ )?PRIVATE KEY-----/g,
   /sk-[A-Za-z0-9_-]{8,}/g,
-  /Bearer\s+[A-Za-z0-9._-]+/g,
-  /(api[_-]?key|token|secret|password)["']?\s*[:=]\s*["']?[^\s"']+/gi,
+  // Bearer/base64 tokens include + / = ~; stopping short of them leaks the tail.
+  /Bearer\s+[A-Za-z0-9._~+/=-]+/gi,
+  // AWS access key IDs (AKIA/ASIA/AGPA/...) and GitHub tokens.
+  /\b(?:AKIA|ASIA|AGPA|AIDA|AROA|ANPA|ANVA|A3T[A-Z0-9])[A-Z0-9]{12,}\b/g,
+  /\bgh[pousr]_[A-Za-z0-9]{16,}\b/g,
+  /(Authorization\s*:\s*(?:Basic|Bearer)\s+)[^\s,;]+/gi,
+  // Assignment forms; the value may be quoted and contain spaces.
+  /\b(?:api[_-]?key|token|secret|password)["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s"']+)/gi,
 ];
 
 export function redact(text: string): string {
-  let out = text;
+  let out = stripAnsi(text);
   for (const pattern of REDACTION_PATTERNS) {
-    out = out.replace(pattern, "[REDACTED]");
+    if (pattern.source.startsWith("(")) {
+      out = out.replace(pattern, "$1[REDACTED]");
+    } else {
+      out = out.replace(pattern, "[REDACTED]");
+    }
+  }
+
+  const home = homedir();
+  if (home.length > 1) {
+    out = out.replace(new RegExp(escapeRegExp(home), "g"), "~");
   }
   return out;
+}
+
+export function boundText(text: string, cap = 12_000): string {
+  if (text.length <= cap) return text;
+  const head = Math.floor(cap / 2);
+  const tail = cap - head;
+  return `${text.slice(0, head)}\n…[diagnostic truncated]…\n${text.slice(-tail)}`;
 }
 
 /**
