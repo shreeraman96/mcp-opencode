@@ -38,6 +38,10 @@
     "./backends/grok.js": {
       "types": "./dist/backends/grok.d.ts",
       "default": "./dist/backends/grok.js"
+    },
+    "./backends/codex.js": {
+      "types": "./dist/backends/codex.d.ts",
+      "default": "./dist/backends/codex.js"
     }
   },
   "scripts": {

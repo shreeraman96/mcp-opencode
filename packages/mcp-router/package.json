@@ -1,0 +1,57 @@
+{
+  "name": "mcp-router",
+  "version": "0.1.0",
+  "description": "MCP server that routes a coding task to a user-configured model tier (light/standard/heavy) with capability filtering and provably-safe cross-backend fallback. Backend-agnostic; you configure every model.",
+  "type": "module",
+  "license": "MIT",
+  "author": "shreeraman96",
+  "homepage": "https://github.com/shreeraman96/mcp-coding-agents#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shreeraman96/mcp-coding-agents.git",
+    "directory": "packages/mcp-router"
+  },
+  "bugs": {
+    "url": "https://github.com/shreeraman96/mcp-coding-agents/issues"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "router",
+    "fallback",
+    "opencode",
+    "grok",
+    "codex",
+    "claude-code",
+    "ai-agent",
+    "delegation"
+  ],
+  "bin": {
+    "mcp-router": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "pretest": "npm run build --workspace @mcp-coding-agents/core --if-present",
+    "test": "vitest run",
+    "prepublishOnly": "npm run build"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0 <2.0.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@mcp-coding-agents/core": "0.1.0",
+    "typescript": "^5.6.2",
+    "tsup": "^8.5.1",
+    "vitest": "^2.1.4",
+    "@types/node": "^20.14.0"
+  }
+}

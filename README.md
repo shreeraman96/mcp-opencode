@@ -1,20 +1,22 @@
 # MCP CLI workspace
 
-This private npm workspace contains two independent MCP stdio servers. They
-are separate packages, separate executable processes, and separate published
-identities:
+This npm workspace contains three MCP stdio servers built on one internal
+shared core. They are separate packages, separate executable processes, and
+separate published identities:
 
 - [`mcp-opencode`](./packages/mcp-opencode) delegates to the OpenCode CLI.
   Published on npm: [`mcp-opencode`](https://www.npmjs.com/package/mcp-opencode).
 - [`mcp-grok`](./packages/mcp-grok) wraps the installed Grok Build CLI.
   Published on npm: [`mcp-grok`](https://www.npmjs.com/package/mcp-grok).
+- [`mcp-router`](./packages/mcp-router) routes a coding task to a
+  user-configured model tier (light/standard/heavy) with capability filtering
+  and provably-safe cross-backend fallback. **New; not yet published.**
 
-Both servers are published and installable directly via `npx` (see below).
-
-Neither server is a combined router, and there is deliberately no shared core
-package yet. Each package owns its CLI adapter, policy, parser, queue, tests,
-and runtime dependencies so either package can be installed and published on
-its own.
+`@mcp-coding-agents/core` is a private, never-published package that holds the
+shared run/parse/classify/redact/validateCwd runtime; it is bundled into each
+product's `dist` at build, so it is never a runtime npm dependency. Each
+publishable package still owns its own tool schemas, tests, and runtime deps and
+can be installed on its own.
 
 ## Quick start
 
