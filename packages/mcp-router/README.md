@@ -101,6 +101,43 @@ derivation), prints the configured tiers/capabilities and which backend CLIs are
 installed (warning on any configured-but-missing backend), and exits `0` when the
 config is valid, `1` when it is invalid or absent.
 
+### Interactive setup: `mcp-orchestrate --init`
+
+Rather than hand-writing the config, run the wizard in your terminal:
+
+```bash
+mcp-orchestrate --init            # writes the default config path
+mcp-orchestrate --init <path>     # or an explicit path (handy for testing)
+```
+
+It detects installed backends, discovers each backend's models (best-effort — the
+list is untrusted, you confirm every pick), walks each tier, shows the **diff +
+risks**, asks to confirm, then writes a `0600` config and self-runs `--check`. It
+**requires a TTY** and **replaces** the config (it starts blank, not a merge). The
+parent directory must not be group/world-writable (so `/tmp` is refused by design).
+
+### Conversational setup from an MCP client (opt-in)
+
+You can also drive setup from inside an MCP client (Claude Code, codex, opencode).
+Because config is the router's trust boundary, these tools are registered **only
+when `MCP_ROUTER_ALLOW_INIT=1`** is set in the server's environment — never on by
+default:
+
+- **`init_status()`** — installed backends, discovered models (untrusted), and
+  which tiers/capabilities are configured (presence only). Writes nothing.
+- **`init_preview(spec)`** — validates a proposed config through the exact server
+  path and returns the diff + server-computed risks. Writes nothing.
+- **`init_apply(spec)`** — stages the config as `<config>.pending`. It **can never
+  write the live config**; promotion requires a human running the accept step.
+
+```bash
+mcp-orchestrate --accept-pending [path]   # review the staged diff + risks, confirm, commit
+```
+
+`--accept-pending` **requires a TTY** and has no non-interactive bypass: the human
+review at a real terminal is the attestation that a prompt-injected assistant
+cannot forge. Enable `MCP_ROUTER_ALLOW_INIT=1` only during setup.
+
 ## Tools
 
 - **`route(prompt, cwd, tier, caps?, timeoutSec?)`** — dispatch to the tier (with

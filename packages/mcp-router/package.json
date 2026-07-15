@@ -1,6 +1,6 @@
 {
   "name": "mcp-orchestrate",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "MCP server that routes a coding task to a user-configured model tier (light/standard/heavy) with capability filtering and provably-safe cross-backend fallback. Backend-agnostic; you configure every model.",
   "type": "module",
   "license": "MIT",

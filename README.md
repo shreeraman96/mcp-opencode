@@ -36,7 +36,7 @@ npx -y mcp-opencode
 # Grok Build CLI-backed server
 npx -y mcp-grok
 
-# Tier router across opencode / grok / codex (configure it with `mcp-orchestrate --check`)
+# Tier router across opencode / grok / codex (set it up with `mcp-orchestrate --init`)
 npx -y mcp-orchestrate
 ```
 

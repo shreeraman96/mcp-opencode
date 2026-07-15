@@ -60,32 +60,35 @@ export function defaultConfigPath(env: NodeJS.ProcessEnv = process.env): string 
   return path.join(env.XDG_CONFIG_HOME || path.join(homedir(), ".config"), "mcp-router", "config.json");
 }
 
-function readHardenedConfig(configPath: string): string | undefined {
+// Shared by the config read path AND the init/write pending-config read path
+// (src/init/write.ts) so a second, drifted copy of these perms/owner/parent
+// checks can never creep in for the wizard's pending file.
+export function readHardenedFile(filePath: string): string | undefined {
   let fd: number;
   try {
     // Open and inspect the same descriptor before reading: this ordering closes the stat-then-open TOCTOU gap.
-    fd = openSync(configPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    fd = openSync(filePath, constants.O_RDONLY | constants.O_NOFOLLOW);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw new Error(`cannot securely open config ${configPath}: ${(error as Error).message}`);
+    throw new Error(`cannot securely open config ${filePath}: ${(error as Error).message}`);
   }
   try {
     const fileStat = fstatSync(fd);
-    if (!fileStat.isFile()) throw new Error(`config path is not a regular file: ${configPath}`);
+    if (!fileStat.isFile()) throw new Error(`config path is not a regular file: ${filePath}`);
     if (typeof process.getuid === "function" && fileStat.uid !== process.getuid()) {
-      throw new Error(`config is not owned by the current user: ${configPath}`);
+      throw new Error(`config is not owned by the current user: ${filePath}`);
     }
     if ((fileStat.mode & 0o077) !== 0) {
-      throw new Error(`config permissions are too broad: ${configPath}; use chmod 600 ${configPath}`);
+      throw new Error(`config permissions are too broad: ${filePath}; use chmod 600 ${filePath}`);
     }
     let parent: Stats;
     try {
-      parent = statSync(path.dirname(configPath));
+      parent = statSync(path.dirname(filePath));
     } catch (error) {
-      throw new Error(`cannot inspect config parent for ${configPath}: ${(error as Error).message}`);
+      throw new Error(`cannot inspect config parent for ${filePath}: ${(error as Error).message}`);
     }
     if ((parent.mode & 0o022) !== 0) {
-      throw new Error(`config parent directory is group- or world-writable: ${configPath}`);
+      throw new Error(`config parent directory is group- or world-writable: ${filePath}`);
     }
     return readFileSync(fd, "utf8");
   } finally {
@@ -151,6 +154,18 @@ function authorize(config: RouterConfig): RouterConfig {
   return config;
 }
 
+export { configSchema };
+
+/**
+ * Validate an already-parsed JSON value through the EXACT schema + authorize
+ * path the server uses. This is the single validation entry point shared by
+ * loadConfig (reading the live config) and the init wizard (previewing +
+ * accepting a candidate config) so the two can never drift.
+ */
+export function validateConfigObject(raw: unknown): RouterConfig {
+  return authorize(configSchema.parse(raw) as RouterConfig);
+}
+
 export async function loadConfig(opts: {
   configPath?: string;
   env?: NodeJS.ProcessEnv;
@@ -158,7 +173,7 @@ export async function loadConfig(opts: {
 } = {}): Promise<LoadedConfig> {
   const env = opts.env ?? process.env;
   const configPath = opts.configPath ?? env.MCP_ROUTER_CONFIG ?? defaultConfigPath(env);
-  const content = readHardenedConfig(configPath);
+  const content = readHardenedFile(configPath);
   if (content === undefined) {
     return {
       source: "auto-detect",
@@ -171,6 +186,5 @@ export async function loadConfig(opts: {
   } catch (error) {
     throw new Error(`invalid JSON in config ${configPath}: ${(error as Error).message}`);
   }
-  const parsed = configSchema.parse(raw) as RouterConfig;
-  return { source: "file", path: configPath, config: authorize(parsed) };
+  return { source: "file", path: configPath, config: validateConfigObject(raw) };
 }
