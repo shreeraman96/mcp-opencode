@@ -1,4 +1,4 @@
-# mcp-router
+# mcp-orchestrate
 
 An MCP stdio server that routes a coding task to a **model tier** you configure
 (`light` / `standard` / `heavy`), filters by **capability** (e.g. `vision`), and
@@ -19,19 +19,24 @@ yours, supplied in config.
 ## Install
 
 ```bash
-npx -y mcp-router
+npx -y mcp-orchestrate
 ```
 
 Register with an MCP client (Claude Code):
 
 ```bash
-claude mcp add router -- npx -y mcp-router
+claude mcp add router -- npx -y mcp-orchestrate
 ```
+
+> The published package is **`mcp-orchestrate`** and its CLI command is
+> `mcp-orchestrate`. The config directory (`~/.config/mcp-router/`) and the
+> `MCP_ROUTER_*` environment variables keep the `mcp-router` prefix for
+> backward compatibility.
 
 ## Backends
 
-`mcp-router` drives the CLIs you already have installed. It does not ship or
-assume any model:
+`mcp-orchestrate` drives the CLIs you already have installed. It does not ship
+or assume any model:
 
 - **opencode** — spawned; any provider/model your OpenCode install exposes.
 - **grok** — spawned; the Grok Build CLI.
@@ -86,8 +91,8 @@ MCP stdio server) to confirm the server will accept your config before wiring it
 up:
 
 ```bash
-mcp-router --check            # checks the default config path
-mcp-router --check <path>     # or an explicit path
+mcp-orchestrate --check            # checks the default config path
+mcp-orchestrate --check <path>     # or an explicit path
 ```
 
 It loads the config through the exact same hardened path the server uses

@@ -349,12 +349,12 @@ if (process.argv[1] !== undefined) {
 if (isMainModule) {
   const argv = process.argv.slice(2);
   if (argv.includes("--help") || argv.includes("-h")) {
-    console.log("mcp-router: MCP stdio server routing coding tasks across configured model tiers");
+    console.log("mcp-orchestrate: MCP stdio server routing coding tasks across configured model tiers");
     console.log("");
     console.log("Usage:");
-    console.log("  mcp-router            start the MCP stdio server (spawned by your MCP client)");
-    console.log("  mcp-router --check [path]   validate the config and report whether the server will accept it");
-    console.log("  mcp-router --help     show this help");
+    console.log("  mcp-orchestrate            start the MCP stdio server (spawned by your MCP client)");
+    console.log("  mcp-orchestrate --check [path]   validate the config and report whether the server will accept it");
+    console.log("  mcp-orchestrate --help     show this help");
   } else if (argv.includes("--check")) {
     // Config doctor: validate via the real loader and exit 0 (valid) / 1 (invalid
     // or absent). An optional bare path after --check overrides the config location.
