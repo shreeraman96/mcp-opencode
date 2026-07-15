@@ -2,13 +2,20 @@
 
 An MCP stdio server that routes a coding task to a **model tier** you configure
 (`light` / `standard` / `heavy`), filters by **capability** (e.g. `vision`), and
-falls back to the next configured backend **only when doing so is provably safe**.
+falls back to the next configured backend **only on a fast, clean failure with a
+byte-identical git tree**.
 
-The calling model (e.g. Claude Code, Codex) routes by *intent* — it picks a tier
-with full task context. The router owns *reliability*: the tier→model mapping,
-capability filtering, cooldowns, and a safety-gated fallback. It never invents a
-model, and **nothing about any author's setup is baked in** — every mapping is
-yours, supplied in config.
+The calling assistant (any MCP client — Claude Code, Codex, Cursor, …) routes by
+*intent* — it picks a tier with full task context. The router owns *reliability*:
+the tier→model mapping, capability filtering, cooldowns, and a safety-gated
+fallback. It never invents a model, and **nothing about any author's setup is
+baked in** — every mapping is yours, supplied in config.
+
+> **It spawns CLIs, not MCPs.** The router drives each backend by spawning its
+> command-line tool directly (`opencode` / `grok` / `codex`). It is *only* an MCP
+> server — it has no MCP client inside it and never calls `mcp-opencode`,
+> `mcp-grok`, or the codex MCP. Those are sibling single-backend servers over the
+> same CLIs; installing them has no effect on routing.
 
 > **Honest scope (v1):** fallback fires only for **fast, clean failures** — a
 > backend that isn't installed, is rate-limited/overloaded immediately, or fails
